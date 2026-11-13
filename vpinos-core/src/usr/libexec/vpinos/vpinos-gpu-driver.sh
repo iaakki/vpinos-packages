@@ -250,8 +250,20 @@ case "$mode" in
         # parameter description) rather than mature, production-ready
         # behavior. `modeset=1` alone is NVIDIA's own well-documented,
         # non-experimental requirement and is unaffected by any of this.
-        modprobe nvidia-drm modeset=1 2>/dev/null \
-            || echo "$(date -Is): vpinos-gpu-driver: modprobe nvidia-drm modeset=1 failed" >>/var/log/vpinos-menu.log
+        #
+        # fbdev=0 explicitly: since driver 570 nvidia-drm defaults to
+        # fbdev=1, so leaving it out no longer means "off". When nouveau
+        # drove the display before this switch (default mode loads it,
+        # see below), the fbdev console takeover hangs modprobe forever
+        # inside nvkms ("Idling display engine timed out", nvidia_drm
+        # stuck in "Loading", only a power cycle recovers). Confirmed on
+        # a GTX 1080 with 580.196.07: fbdev=Y hung twice, fbdev=0
+        # switched nouveau -> nvidia -> nouveau cleanly via
+        # vpinos-console-restart.sh. kmscon drives DRM directly, so the
+        # console doesn't need nvidia's fbdev. Same for nvidia-legacy
+        # below (580 has the same default).
+        modprobe nvidia-drm modeset=1 fbdev=0 2>/dev/null \
+            || echo "$(date -Is): vpinos-gpu-driver: modprobe nvidia-drm modeset=1 fbdev=0 failed" >>/var/log/vpinos-menu.log
         if lsmod | grep -q '^nvidia '; then
             mkdir -p "${LOADED%/*}"
             echo nvidia > "$LOADED"
@@ -262,8 +274,9 @@ case "$mode" in
         # Same sequence as nvidia above (see its comments: unbind_fbcon
         # first or nouveau never lets go), with the 580 modules insmod'ed
         # by path. Options go on the insmod line: modprobe.d's
-        # `nvidia-drm modeset=1` (nvidia-wayland.conf) doesn't apply to
-        # insmod. NVreg_EnableGpuFirmware=0: Pascal and older have no GSP,
+        # `nvidia-drm modeset=1 fbdev=0` (nvidia-wayland.conf) doesn't apply
+        # to insmod; fbdev=0: see the nvidia branch.
+        # NVreg_EnableGpuFirmware=0: Pascal and older have no GSP,
         # and the 580 GSP firmware isn't shipped (no room in the ISO); on
         # Turing and newer the closed module runs without it too.
         unbind_fbcon
@@ -274,7 +287,7 @@ case "$mode" in
             mkdir -p "${LOADED%/*}"
             echo nvidia-legacy > "$LOADED"
             legacy_insmod nvidia-modeset
-            legacy_insmod nvidia-drm modeset=1
+            legacy_insmod nvidia-drm modeset=1 fbdev=0
             # /dev/nvidiactl, /dev/nvidia0, /dev/nvidia-modeset. The
             # libraries would ask nvidia-modprobe (setuid, version-
             # independent, from the current driver) themselves; doing it
