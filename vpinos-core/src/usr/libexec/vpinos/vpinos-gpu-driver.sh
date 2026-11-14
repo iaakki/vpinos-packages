@@ -111,6 +111,18 @@ unload_nvidia() {
     rm -f "$LOADED"
 }
 
+# True when an NVIDIA display controller is older than Turing (PCI
+# device ID below 0x1e00: GTX 900/10 series, Titan V).
+has_pre_turing_nvidia() {
+    for dev in /sys/bus/pci/devices/*; do
+        [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x10de ] || continue
+        case "$(cat "$dev/class" 2>/dev/null)" in
+            0x03*) [ $(($(cat "$dev/device"))) -lt $((0x1e00)) ] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # True when any PCI display controller (class 0x03xxxx) is NVIDIA's.
 has_nvidia_gpu() {
     for dev in /sys/bus/pci/devices/*; do
@@ -133,6 +145,26 @@ if [ "$mode" = nvidia-legacy ] && [ ! -e "$LEGACY_MODULES/nvidia.ko.xz" ]; then
     mode=default
 fi
 loaded=$(cat "$LOADED" 2>/dev/null || true)
+# Pre-Turing NVIDIA: the current (open) nvidia.ko refuses these cards
+# ("does not include the required GPU System Processor"), and
+# nvidia-kernel-support's 60-nvidia.rules runs nvidia-modprobe on every
+# add of the nvidia module -- so once anything loads it, it loads, fails
+# the probe, unloads and reloads about once a second for as long as the
+# boot lasts. Confirmed on a GTX 1080 in default mode (90 cycles in the
+# first 70 s; lsmod then shows nvidia on and off, which the early exits
+# above read as "nvidia is loaded"). Make `modprobe nvidia` a no-op for
+# this boot: nvidia-legacy insmods its modules by path, unaffected.
+if has_pre_turing_nvidia && [ ! -e /run/modprobe.d/vpinos-pre-turing-nvidia.conf ]; then
+    mkdir -p /run/modprobe.d
+    echo "install nvidia /bin/false" > /run/modprobe.d/vpinos-pre-turing-nvidia.conf
+fi
+
+# Before any early exit: mark that this boot already ran once (the
+# pre-Turing NVIDIA guard below).
+booted_before=0
+[ -e /run/vpinos/gpu-driver-booted ] && booted_before=1
+mkdir -p /run/vpinos
+: > /run/vpinos/gpu-driver-booted
 
 # Skip the whole unbind/modprobe dance entirely when the right driver
 # is already bound -- a real report, confirmed directly: doing it
@@ -220,6 +252,22 @@ case "$mode" in
         fi
         ;;
 esac
+
+# Pre-Turing NVIDIA (GTX 900/10, Titan V: device IDs below 0x1e00)
+# can't swap drivers once one has driven the display: confirmed on a
+# GTX 1080, nouveau then can't train the DisplayPort link, or nouveau's
+# unload hangs and 580 fails with "Display engine push buffer channel
+# allocation failed" -- a black screen until a reboot (see
+# vpinos-menu-actions' pre_turing_nvidia). The first run of each boot
+# (kmscon's ExecStartPre) is the clean point; after that, keep the
+# driver that's loaded and let the next boot switch. The menu reboots
+# for these cards itself; this covers the other ways gpu-driver
+# changes (SSH, vpinos-config).
+if [ "$booted_before" = 1 ] && has_pre_turing_nvidia \
+    && { lsmod | grep -q '^nouveau ' || lsmod | grep -q '^nvidia '; }; then
+    echo "$(date -Is): vpinos-gpu-driver: gpu-driver is ${mode:-default}, but this NVIDIA card only switches at boot -- keeping the loaded driver until the next reboot" >>/var/log/vpinos-menu.log
+    exit 0
+fi
 
 case "$mode" in
     nvidia)

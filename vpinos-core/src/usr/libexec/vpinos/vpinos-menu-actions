@@ -257,17 +257,68 @@ action_set_console_rotation() {
 # fbcon it happens on the next graphical launch. Opt-in default
 # ("default": the open-source Mesa/NVK driver this image already ships
 # and uses everywhere else). Returns 3 when NVIDIA is refused.
+# Pre-Turing NVIDIA cards (GTX 900/10 series, Titan V: PCI device IDs
+# below 0x1e00) can't swap drivers on a running system. Confirmed on a
+# GTX 1080, both directions, through restart_console: nvidia-legacy ->
+# default left nouveau unable to train the DisplayPort link ("training
+# failed", then "vblank wait timed out" every second); default ->
+# nvidia-legacy hung nouveau's unload ("core notifier timeout") and 580
+# then failed with "Display engine push buffer channel allocation
+# failed", so nvidia-drm never got a device. Both are a black screen
+# that only a reboot fixes. At boot neither driver is bound yet, so the
+# same switch is clean there.
+pre_turing_nvidia() {
+    for dev in /sys/bus/pci/devices/*; do
+        [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x10de ] || continue
+        case "$(cat "$dev/class" 2>/dev/null)" in
+            0x03*) [ $(($(cat "$dev/device"))) -lt $((0x1e00)) ] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# The driver bound right now, in /etc/vpinos/gpu-driver terms.
+loaded_gpu_driver() {
+    if lsmod | grep -q '^nvidia '; then
+        cat /run/vpinos/nvidia-loaded 2>/dev/null || echo nvidia
+    elif lsmod | grep -q '^nouveau '; then
+        echo default
+    fi
+}
+
+# Applies the gpu-driver just written ($1 = mode, $2 = its name for the
+# message): restart the console on kmscon, else the next launch picks it
+# up -- except on pre-Turing NVIDIA, which reboots instead (see above).
+apply_gpu_driver() {
+    if pre_turing_nvidia && [ -n "$(loaded_gpu_driver)" ] \
+        && [ "$(loaded_gpu_driver)" != "$1" ]; then
+        log "gpu-driver $1 on a pre-Turing NVIDIA card: applies at boot"
+        if on_kmscon; then
+            echo "This card can only switch drivers at boot."
+            echo "Rebooting to switch to $2..."
+            sleep 3
+            sudo /usr/bin/systemctl reboot
+            sleep 30
+            return 0
+        fi
+        echo "This card can only switch drivers at boot:"
+        echo "$2 after the next reboot."
+        return 0
+    fi
+    if on_kmscon; then
+        echo "Switching to $2 now."
+        restart_console gpu-driver
+        return 0
+    fi
+    echo "Will use $2 on the next launch."
+}
+
 action_set_gpu_driver() {
     case "$1" in
         default)
             echo "default" > /etc/vpinos/gpu-driver
             log "gpu-driver set to default"
-            if on_kmscon; then
-                echo "Switching to the open-source driver now."
-                restart_console gpu-driver
-                return 0
-            fi
-            echo "Will use the open-source driver on the next launch."
+            apply_gpu_driver default "the open-source driver"
             ;;
         nvidia)
             # Secure Boot (kernel lockdown) rejects the unsigned,
@@ -285,12 +336,7 @@ action_set_gpu_driver() {
             fi
             echo "nvidia" > /etc/vpinos/gpu-driver
             log "gpu-driver set to nvidia"
-            if on_kmscon; then
-                echo "Switching to the NVIDIA proprietary driver now."
-                restart_console gpu-driver
-                return 0
-            fi
-            echo "Will use the NVIDIA proprietary driver on the next launch."
+            apply_gpu_driver nvidia "the NVIDIA proprietary driver"
             ;;
         nvidia-legacy)
             # NVIDIA's 580 branch, for Maxwell/Pascal/Volta cards the
@@ -317,12 +363,7 @@ action_set_gpu_driver() {
             fi
             echo "nvidia-legacy" > /etc/vpinos/gpu-driver
             log "gpu-driver set to nvidia-legacy"
-            if on_kmscon; then
-                echo "Switching to the NVIDIA legacy driver now."
-                restart_console gpu-driver
-                return 0
-            fi
-            echo "Will use the NVIDIA legacy driver on the next launch."
+            apply_gpu_driver nvidia-legacy "the NVIDIA legacy driver"
             ;;
         *) echo "usage: set-gpu-driver default|nvidia|nvidia-legacy" >&2; return 2 ;;
     esac
