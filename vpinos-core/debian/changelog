@@ -1,3 +1,16 @@
+vpinos-core (1.1.26) trixie; urgency=medium
+
+  * NVIDIA cards work in the default (open-source) GPU driver mode
+    again: the open-source driver (nouveau) now loads, instead of
+    leaving a blank screen and every launch failing. NVIDIA's driver
+    package blocks nouveau from loading by itself.
+  * Switching to NVIDIA proprietary or NVIDIA legacy no longer hangs
+    the machine: the NVIDIA driver no longer takes over the text
+    console (nvidia-drm fbdev=0), which froze the display after
+    nouveau had been running. Thanks to iaakki.
+
+ -- Superhac <superhac007@gmail.com>  Sat, 14 Nov 2026 18:48:25 -0600
+
 vpinos-core (1.1.25) trixie; urgency=medium
 
   * Launching from SSH works again: vpinos-launch run over SSH (for

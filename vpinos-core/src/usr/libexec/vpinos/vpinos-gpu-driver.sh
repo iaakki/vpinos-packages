@@ -195,11 +195,28 @@ case "$mode" in
     # auto-loads at boot -- the console runs on efifb and there is no
     # DRM device at all. Exiting here then skipped the explicit
     # `modprobe nouveau` below, and Hyprland aborted with no GPU (exit
-    # 134 on every launch). Confirmed on a GTX 1080 (Pascal): with this
-    # check, default mode loads nouveau and NVK finds the card.
+    # 134 on every launch). Confirmed on a GTX 1080 (Pascal): loading
+    # nouveau here, default mode gets a DRM device and NVK finds the card.
+    #
+    # It's loaded right here, then exit, without the unbind/unload
+    # sequence below: with nvidia not loaded there's nothing to unbind
+    # or remove (nouveau takes the display over from efifb by itself,
+    # as it does when it auto-loads). Falling through instead would run
+    # unbind_fbcon on every launch wherever nouveau can't load (a card
+    # the kernel's nouveau rejects, hybrid laptops) -- the
+    # console-never-repaints bug above, back again.
     *)
         if ! lsmod | grep -q '^nvidia ' && ! lsmod | grep -q '^nvidia_drm '; then
-            { ! has_nvidia_gpu || lsmod | grep -q '^nouveau '; } && exit 0
+            if has_nvidia_gpu && ! lsmod | grep -q '^nouveau '; then
+                if modprobe nouveau 2>/dev/null; then
+                    # Fresh framebuffer, unrotated: same as the end of
+                    # this script.
+                    /usr/libexec/vpinos/vpinos-console-rotation.sh || true
+                else
+                    echo "$(date -Is): vpinos-gpu-driver: modprobe nouveau failed (dmesg)" >>/var/log/vpinos-menu.log
+                fi
+            fi
+            exit 0
         fi
         ;;
 esac
